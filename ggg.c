@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <WinSock2.h>
 #include <proton/engine.h>
 #include <proton/io.h>
 #include <proton/event.h>
@@ -64,6 +65,8 @@ void events(ldp_connection_t *conn, pn_collector_t *coll) {
 }
 
 int main() {
+    WSADATA wsadata;
+    WSAStartup(MAKEWORD(2, 2), &wsadata);
 	ldp_connection_t *conn = ldp_connection(events);
 	ldp_connection_connect(conn, "host", "80");
     dispatch_main();

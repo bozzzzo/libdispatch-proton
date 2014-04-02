@@ -6,6 +6,7 @@
 #include "proton/engine.h"
 #include "proton/io.h"
 #include "dispatch/dispatch.h"
+#include "dispatch/once.h"
 
 struct ldp_connection_t {
 
@@ -62,7 +63,7 @@ ldp_connection_t * ldp_connection(ldp_activity_f events) {
 }
 
 void connection_pump(ldp_connection_t *conn) {
-    if (pn_event_type(pn_collector_peek(conn->coll)) != PN_EVENT_NONE) {
+    if (pn_collector_peek(conn->coll)) {
         conn->events(conn, conn->coll);
     }
     bool can_read = pn_transport_capacity(conn->transp) > 0;
@@ -145,24 +146,27 @@ static void connection_connect(void* vargs) {
     }
     conn->transp = pn_transport();
     pn_transport_bind(conn->transp, conn->conn);
+    pn_connection_open(conn->conn);
 
     conn->sock = pn_connect(conn->io, pn_string_get(host), pn_string_get(port));
 
-    conn->is_reading = false;
+    conn->is_reading = true;
     conn->readable = dispatch_source_create(DISPATCH_SOURCE_TYPE_READ, conn->sock, 0, conn->dq);
     dispatch_set_context(conn->readable, conn);
     dispatch_source_set_event_handler_f(conn->readable, connection_readable);
+    dispatch_resume(conn->readable);
 
-    conn->is_writing = false;
+    conn->is_writing = true;
     conn->writable = dispatch_source_create(DISPATCH_SOURCE_TYPE_WRITE, conn->sock, 0, conn->dq);
     dispatch_set_context(conn->writable, conn);
     dispatch_source_set_event_handler_f(conn->writable, connection_writable);
+    dispatch_resume(conn->writable);
 
     connection_pump(conn);
 
     pn_decref(conn);
-    free(host);
-    free(port);
+    pn_free(host);
+    pn_free(port);
     free(args);
 }
 
