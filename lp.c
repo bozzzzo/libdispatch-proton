@@ -19,6 +19,7 @@ struct ldp_connection_t {
     pn_socket_t sock;
 
     dispatch_queue_t dq;
+    bool is_connecting;
     bool is_reading;
     dispatch_source_t readable;
     bool is_writing;
@@ -29,6 +30,13 @@ struct ldp_connection_t {
 #define ldp_connection_hashcode NULL
 #define ldp_connection_compare NULL
 #define ldp_connection_inspect NULL
+#define LDP_DEBUG
+
+#ifdef LDP_DEBUG
+#define ldp_debug(x, ...) do { fprintf(stderr, x, __VA_ARGS__); } while(0)
+#else
+#define ldp_debug(x, ...) do { } while(0)
+#endif
 
 static void ldp_connection_finalize(void *object) {
     ldp_connection_t *conn = (ldp_connection_t*)object;
@@ -68,21 +76,29 @@ void connection_pump(ldp_connection_t *conn) {
     }
     bool can_read = pn_transport_capacity(conn->transp) > 0;
     bool can_write = pn_transport_pending(conn->transp) > 0;
-    if (can_read != conn->is_reading) {
+    if (can_read != conn->is_reading && !conn->is_connecting) {
         conn->is_reading = can_read;
         if (can_read) {
             dispatch_resume(conn->readable);
+            ldp_debug("resume read\n");
         } else {
             dispatch_suspend(conn->readable);
+            ldp_debug("suspend read\n");
         }
+    } else {
+        ldp_debug("read stays %s\n", conn->is_reading ? "resumed" : "suspended");
     }
     if (can_write != conn->is_writing) {
         conn->is_writing = can_write;
         if (can_write) {
             dispatch_resume(conn->writable);
+            ldp_debug("resume write\n");
         } else {
             dispatch_suspend(conn->writable);
+            ldp_debug("suspend write\n");
         }
+    } else {
+        ldp_debug("write stays %s\n", conn->is_writing ? "resumed" : "suspended");
     }
 }
 
@@ -109,7 +125,8 @@ static void connection_readable(void *vconn) {
             }
         }
     } else {
-        pn_transport_process(conn->transp, n);
+        int processed = pn_transport_process(conn->transp, n);
+        ldp_debug("recvd %d processed %d\n", (int)n, processed);
     }
     connection_pump(conn);
 }
@@ -125,7 +142,10 @@ static void connection_writable(void *vconn) {
         }
     } else {
         pn_transport_pop(conn->transp, n);
+        ldp_debug("sent %d remaining to send %d\n",
+            (int)n, (int)pn_transport_pending(conn->transp));
     }
+    conn->is_connecting = false;
     connection_pump(conn);
 }
 
@@ -150,17 +170,16 @@ static void connection_connect(void* vargs) {
 
     conn->sock = pn_connect(conn->io, pn_string_get(host), pn_string_get(port));
 
-    conn->is_reading = true;
+    conn->is_connecting = true;
+    conn->is_reading = false;
     conn->readable = dispatch_source_create(DISPATCH_SOURCE_TYPE_READ, conn->sock, 0, conn->dq);
     dispatch_set_context(conn->readable, conn);
     dispatch_source_set_event_handler_f(conn->readable, connection_readable);
-    dispatch_resume(conn->readable);
 
-    conn->is_writing = true;
+    conn->is_writing = false;
     conn->writable = dispatch_source_create(DISPATCH_SOURCE_TYPE_WRITE, conn->sock, 0, conn->dq);
     dispatch_set_context(conn->writable, conn);
     dispatch_source_set_event_handler_f(conn->writable, connection_writable);
-    dispatch_resume(conn->writable);
 
     connection_pump(conn);
 
