@@ -1,6 +1,6 @@
 [submodule "xdispatch"]
 	path = xdispatch
-	url = ./masters/xdispatch
+	url = ../xdispatch.git
 [submodule "qpid-proton"]
 	path = qpid-proton
-	url = ./masters/qpid-proton
+	url = ../qpid-proton.git
