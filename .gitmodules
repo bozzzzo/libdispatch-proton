@@ -1,6 +1,8 @@
 [submodule "xdispatch"]
 	path = xdispatch
 	url = ../xdispatch.git
+	branch = win_master
 [submodule "qpid-proton"]
 	path = qpid-proton
 	url = ../qpid-proton.git
+	branch = trunk
