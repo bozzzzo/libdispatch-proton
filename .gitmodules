@@ -1,8 +1,8 @@
 [submodule "xdispatch"]
 	path = xdispatch
-	url = ../xdispatch.git
+	url = git@github.com:digiverse/xdispatch.git
 	branch = win_master
 [submodule "qpid-proton"]
 	path = qpid-proton
-	url = ../qpid-proton.git
+	url = git@github.com:digiverse/qpid-proton.git
 	branch = trunk
