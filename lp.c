@@ -33,9 +33,9 @@ struct ldp_connection_t {
 #define LDP_DEBUG
 
 #ifdef LDP_DEBUG
-#define ldp_debug(x, ...) do { fprintf(stderr, x, __VA_ARGS__); } while(0)
+#define ldp_debug(...) do { fprintf(stderr, __VA_ARGS__); } while(0)
 #else
-#define ldp_debug(x, ...) do { } while(0)
+#define ldp_debug(...) do { } while(0)
 #endif
 
 static void ldp_connection_finalize(void *object) {
