@@ -5,6 +5,7 @@
 #include "proton/object.h"
 #include "proton/engine.h"
 #include "proton/io.h"
+#include "proton/sasl.h"
 #include "dispatch/dispatch.h"
 #include "dispatch/once.h"
 
@@ -38,6 +39,10 @@ struct ldp_connection_t {
 #define ldp_debug(...) do { } while(0)
 #endif
 
+#ifndef min
+#define min(x,y) ((x)<(y)?(x):(y))
+#endif
+
 static void ldp_connection_finalize(void *object) {
     ldp_connection_t *conn = (ldp_connection_t*)object;
     pn_free(conn->conn);
@@ -47,6 +52,10 @@ static void ldp_connection_finalize(void *object) {
     dispatch_release(conn->dq);
     dispatch_release(conn->readable);
     dispatch_release(conn->writable);
+}
+
+static void ldp_error_report(ldp_connection_t *conn, const char *pfx, const char *error) {
+    fprintf(stderr, "%s ERROR %s\n", pfx, error);
 }
 
 ldp_connection_t * ldp_connection(ldp_activity_f events) {
@@ -70,10 +79,54 @@ ldp_connection_t * ldp_connection(ldp_activity_f events) {
     return conn;
 }
 
+static void try_recv(ldp_connection_t *conn) {
+    ssize_t capacity = pn_transport_capacity(conn->transp);
+    if (capacity <= 0) {
+        ldp_error_report(conn, "TRANSPORT", "no capacity and transport is readable");
+    }
+    ssize_t n = pn_recv(conn->io, conn->sock, pn_transport_tail(conn->transp), min(capacity,1000));
+    if (n <= 0) {
+        if (n == 0 || !pn_wouldblock(conn->io)) {
+            if (n < 0) perror("recv");
+            pn_transport_close_tail(conn->transp);
+            if (!(pn_connection_state(conn->conn) & PN_REMOTE_CLOSED)) {
+                ldp_error_report(conn, "CONNECTION", "connection aborted (remote)");
+            }
+        } else {
+            ldp_debug("recv would block\n");
+        }
+    } else {
+        int processed = pn_transport_process(conn->transp, n);
+        ldp_debug("recvd %d processed %d\n", (int)n, processed);
+    }
+}
+
+static void try_send(ldp_connection_t *conn) {
+    ssize_t pending = pn_transport_pending(conn->transp);
+    ssize_t n = pn_send(conn->io, conn->sock, pn_transport_head(conn->transp), min(pending,1000));
+    if (n < 0) {
+        if (!pn_wouldblock(conn->io)) {
+            ldp_error_report(conn, "CONNECTION", "send");
+            pn_transport_close_head(conn->transp);
+        } else {
+            ldp_debug("send would block\n");
+        }
+    } else {
+        pn_transport_pop(conn->transp, n);
+        ldp_debug("sent %d remaining to send %d\n",
+            (int)n, (int)pn_transport_pending(conn->transp));
+    }
+    conn->is_connecting = false;
+}
+
 void connection_pump(ldp_connection_t *conn) {
+    // XXX add proper tracking of readable state
+    try_recv(conn);
     if (pn_collector_peek(conn->coll)) {
         conn->events(conn, conn->coll);
     }
+    // XXX add proper tracking of writable state
+    try_send(conn);
     bool can_read = pn_transport_capacity(conn->transp) > 0;
     bool can_write = pn_transport_pending(conn->transp) > 0;
     if (can_read != conn->is_reading && !conn->is_connecting) {
@@ -108,44 +161,15 @@ struct ldp_connection_connect_args {
     pn_string_t *port;
 };
 
-static void ldp_error_report(ldp_connection_t *conn, const char *pfx, const char *error) {
-    fprintf(stderr, "%s ERROR %s\n", pfx, error);
-}
-
 static void connection_readable(void *vconn) {
     ldp_connection_t *conn = (ldp_connection_t*)vconn;
-    ssize_t capacity = pn_transport_capacity(conn->transp);
-    ssize_t n = pn_recv(conn->io, conn->sock, pn_transport_tail(conn->transp), capacity);
-    if (n <= 0) {
-        if (n == 0 || !pn_wouldblock(conn->io)) {
-            if (n < 0) perror("recv");
-            pn_transport_close_tail(conn->transp);
-            if (!(pn_connection_state(conn->conn) & PN_REMOTE_CLOSED)) {
-                ldp_error_report(conn, "CONNECTION", "connection aborted (remote)");
-            }
-        }
-    } else {
-        int processed = pn_transport_process(conn->transp, n);
-        ldp_debug("recvd %d processed %d\n", (int)n, processed);
-    }
+    ldp_debug("connection readable\n");
     connection_pump(conn);
 }
 
 static void connection_writable(void *vconn) {
     ldp_connection_t *conn = (ldp_connection_t*)vconn;
-    ssize_t pending = pn_transport_pending(conn->transp);
-    ssize_t n = pn_send(conn->io, conn->sock, pn_transport_head(conn->transp), pending);
-    if (n < 0) {
-        if (!pn_wouldblock(conn->io)) {
-            ldp_error_report(conn, "CONNECTION", "send");
-            pn_transport_close_head(conn->transp);
-        }
-    } else {
-        pn_transport_pop(conn->transp, n);
-        ldp_debug("sent %d remaining to send %d\n",
-            (int)n, (int)pn_transport_pending(conn->transp));
-    }
-    conn->is_connecting = false;
+    ldp_debug("connection writable\n");
     connection_pump(conn);
 }
 
@@ -166,7 +190,19 @@ static void connection_connect(void* vargs) {
     }
     conn->transp = pn_transport();
     pn_transport_bind(conn->transp, conn->conn);
+
+    pn_sasl_t *sasl = pn_sasl(conn->transp);
+    pn_sasl_mechanisms(sasl, "ANONYMOUS");
+    pn_sasl_client(sasl);
+
     pn_connection_open(conn->conn);
+
+    pn_session_t *session = pn_session(conn->conn);
+    pn_session_open(session);
+
+    pn_link_t *sender = pn_sender(session, "sender-xxx");
+    pn_terminus_set_address(pn_link_source(sender), "hello-world");
+    pn_link_open(sender);
 
     conn->sock = pn_connect(conn->io, pn_string_get(host), pn_string_get(port));
 
