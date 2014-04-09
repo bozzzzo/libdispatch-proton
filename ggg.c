@@ -72,6 +72,6 @@ int main() {
     WSAStartup(MAKEWORD(2, 2), &wsadata);
 #endif
 	ldp_connection_t *conn = ldp_connection(events);
-	ldp_connection_connect(conn, "host", "80");
+	ldp_connection_connect(conn, "host", "8194");
     dispatch_main();
 }
