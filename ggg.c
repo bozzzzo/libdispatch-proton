@@ -14,10 +14,22 @@
 
 void process_connection(ldp_connection_t *conn, pn_event_t *event) {
     fprintf(stderr, "connection event %s\n", pn_event_type_name(pn_event_type(event)));
+
+    if (pn_event_type(event) == PN_CONNECTION_REMOTE_STATE) {
+        pn_session_t *session = pn_session(pn_event_connection(event));
+        pn_session_open(session);
+    }
 }
 
 void process_session(ldp_connection_t *conn, pn_event_t *event) {
     fprintf(stderr, "session event %s\n", pn_event_type_name(pn_event_type(event)));
+
+    if (pn_event_type(event) == PN_SESSION_REMOTE_STATE) {
+        pn_session_t *session = pn_event_session(event);
+        pn_link_t *sender = pn_sender(session, "sender-xxx");
+        pn_terminus_set_address(pn_link_source(sender), "hello-world");
+        pn_link_open(sender);
+    }
 }
 
 void process_link(ldp_connection_t *conn, pn_event_t *event) {
@@ -69,12 +81,14 @@ void events(ldp_connection_t *conn, pn_collector_t *coll) {
     }
 }
 
-int main() {
+int main(int argc, const char *argv[]) {
 #ifdef _WIN32
     WSADATA wsadata;
     WSAStartup(MAKEWORD(2, 2), &wsadata);
 #endif
     ldp_connection_t *conn = ldp_connection(events);
-    ldp_connection_connect(conn, "host", "8194");
+    const char *host = argc > 1 ? argv[1] : "host";
+    const char *port = argc > 2 ? argv[2] : "8194";
+    ldp_connection_connect(conn, host, port);
     dispatch_main();
 }

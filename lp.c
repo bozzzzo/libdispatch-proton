@@ -116,17 +116,20 @@ static void try_send(ldp_connection_t *conn) {
         ldp_debug("sent %d remaining to send %d\n",
             (int)n, (int)pn_transport_pending(conn->transp));
     }
-    conn->is_connecting = false;
 }
 
 void connection_pump(ldp_connection_t *conn) {
-    // XXX add proper tracking of readable state
-    try_recv(conn);
+    if (!conn->is_connecting) {
+        // XXX add proper tracking of readable state
+        try_recv(conn);
+    }
     if (pn_collector_peek(conn->coll)) {
         conn->events(conn, conn->coll);
     }
-    // XXX add proper tracking of writable state
-    try_send(conn);
+    if (!conn->is_connecting) {
+        // XXX add proper tracking of writable state
+        try_send(conn);
+    }
     bool can_read = pn_transport_capacity(conn->transp) > 0;
     bool can_write = pn_transport_pending(conn->transp) > 0;
     if (can_read != conn->is_reading && !conn->is_connecting) {
@@ -169,6 +172,10 @@ static void connection_readable(void *vconn) {
 
 static void connection_writable(void *vconn) {
     ldp_connection_t *conn = (ldp_connection_t*)vconn;
+    if (conn->is_connecting) {
+        conn->is_connecting = false;
+        ldp_debug("connected\n");
+    }
     ldp_debug("connection writable\n");
     connection_pump(conn);
 }
@@ -196,13 +203,6 @@ static void connection_connect(void* vargs) {
     pn_sasl_client(sasl);
 
     pn_connection_open(conn->conn);
-
-    pn_session_t *session = pn_session(conn->conn);
-    pn_session_open(session);
-
-    pn_link_t *sender = pn_sender(session, "sender-xxx");
-    pn_terminus_set_address(pn_link_source(sender), "hello-world");
-    pn_link_open(sender);
 
     conn->sock = pn_connect(conn->io, pn_string_get(host), pn_string_get(port));
 
