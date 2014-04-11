@@ -79,12 +79,12 @@ ldp_connection_t * ldp_connection(ldp_activity_f events) {
     return conn;
 }
 
-static void try_recv(ldp_connection_t *conn) {
+static bool try_recv(ldp_connection_t *conn) {
     ssize_t capacity = pn_transport_capacity(conn->transp);
     if (capacity <= 0) {
         ldp_error_report(conn, "TRANSPORT", "no capacity and transport is readable");
     }
-    ssize_t n = pn_recv(conn->io, conn->sock, pn_transport_tail(conn->transp), min(capacity,1000));
+    ssize_t n = pn_recv(conn->io, conn->sock, pn_transport_tail(conn->transp), min(capacity,1));
     if (n <= 0) {
         if (n == 0 || !pn_wouldblock(conn->io)) {
             if (n < 0) perror("recv");
@@ -92,18 +92,21 @@ static void try_recv(ldp_connection_t *conn) {
             if (!(pn_connection_state(conn->conn) & PN_REMOTE_CLOSED)) {
                 ldp_error_report(conn, "CONNECTION", "connection aborted (remote)");
             }
+            return false;
         } else {
             ldp_debug("recv would block\n");
+            return false;
         }
     } else {
         int processed = pn_transport_process(conn->transp, n);
         ldp_debug("recvd %d processed %d\n", (int)n, processed);
     }
+    return true;
 }
 
-static void try_send(ldp_connection_t *conn) {
+static bool try_send(ldp_connection_t *conn) {
     ssize_t pending = pn_transport_pending(conn->transp);
-    ssize_t n = pn_send(conn->io, conn->sock, pn_transport_head(conn->transp), min(pending,1000));
+    ssize_t n = pn_send(conn->io, conn->sock, pn_transport_head(conn->transp), min(pending,1));
     if (n < 0) {
         if (!pn_wouldblock(conn->io)) {
             ldp_error_report(conn, "CONNECTION", "send");
@@ -111,27 +114,29 @@ static void try_send(ldp_connection_t *conn) {
         } else {
             ldp_debug("send would block\n");
         }
+        return false;
     } else {
         pn_transport_pop(conn->transp, n);
         ldp_debug("sent %d remaining to send %d\n",
             (int)n, (int)pn_transport_pending(conn->transp));
     }
+    return true;
 }
 
 void connection_pump(ldp_connection_t *conn) {
-    if (!conn->is_connecting) {
-        // XXX add proper tracking of readable state
-        try_recv(conn);
-    }
     if (pn_collector_peek(conn->coll)) {
         conn->events(conn, conn->coll);
     }
-    if (!conn->is_connecting) {
-        // XXX add proper tracking of writable state
-        try_send(conn);
-    }
     bool can_read = pn_transport_capacity(conn->transp) > 0;
     bool can_write = pn_transport_pending(conn->transp) > 0;
+    if (can_write) {
+        if (!conn->is_connecting) {
+            ldp_debug("try send from pump\n");
+            // XXX add proper tracking of writable state
+            try_send(conn);
+            can_write = pn_transport_pending(conn->transp) > 0;
+        }
+    }
     if (can_read != conn->is_reading && !conn->is_connecting) {
         conn->is_reading = can_read;
         if (can_read) {
@@ -167,6 +172,7 @@ struct ldp_connection_connect_args {
 static void connection_readable(void *vconn) {
     ldp_connection_t *conn = (ldp_connection_t*)vconn;
     ldp_debug("connection readable\n");
+    try_recv(conn);
     connection_pump(conn);
 }
 
