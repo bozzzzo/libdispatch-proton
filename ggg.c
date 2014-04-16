@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <string.h>
 #ifdef _WIN32
 #include <WinSock2.h>
 #endif
@@ -7,6 +8,9 @@
 #include <proton/event.h>
 #include <proton/selectable.h>
 #include <proton/selector.h>
+#include <proton/message.h>
+#include <proton/buffer.h>
+#include <proton/types.h>
 
 #include <dispatch/dispatch.h>
 
@@ -38,6 +42,30 @@ void process_link(ldp_connection_t *conn, pn_event_t *event) {
 
 void process_flow(ldp_connection_t *conn, pn_event_t *event) {
     fprintf(stderr, "flow event %s\n", pn_event_type_name(pn_event_type(event)));
+
+    pn_link_t *sender = pn_event_link(event);
+
+    pn_message_t *message = pn_message();
+    pn_message_set_address(message, "amqp://foo/bar");
+    pn_data_t *body = pn_message_body(message);
+    char *msgtext = "hello world!";
+    pn_data_put_string(body, pn_bytes(strlen(msgtext), msgtext));
+    pn_buffer_t *buffer = pn_buffer(1000);
+    char *encoded = pn_buffer_bytes(buffer).start;
+    size_t size = pn_buffer_capacity(buffer);
+    int err = pn_message_encode(message, encoded, &size);
+    if (err) {
+        fprintf(stderr, "trouble encoding message\n");
+    } else {
+        char tag[8];
+        static uint64_t next_tag;
+        *((uint64_t*)tag) = ++next_tag;
+        pn_delivery_t *d = pn_delivery(sender, pn_dtag(tag, 8));
+        pn_link_send(sender, encoded, size);
+        pn_link_advance(sender);
+    }
+    pn_buffer_free(buffer);
+    pn_message_free(message);
 }
 
 void process_delivery(ldp_connection_t *conn, pn_event_t *event) {
@@ -86,7 +114,7 @@ int main(int argc, const char *argv[]) {
     WSADATA wsadata;
     WSAStartup(MAKEWORD(2, 2), &wsadata);
 #endif
-    ldp_connection_t *conn = ldp_connection(events);
+    ldp_connection_t *conn = ldp_connection(events, NULL);
     const char *host = argc > 1 ? argv[1] : "host";
     const char *port = argc > 2 ? argv[2] : "8194";
     ldp_connection_connect(conn, host, port);
